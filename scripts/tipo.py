@@ -248,7 +248,7 @@ class TIPOScript(scripts.Script):
                                 maximum=90,
                                 step=1,
                                 value=0,
-                                info="Number of tags to ignore from the beginning of the prompt.",
+                                info="Number of tags to ignore from the beginning of the prompt (tags separated by comma or newline).",
                             )
                             format_textarea = gr.TextArea(
                                 value=TIPO_DEFAULT_FORMAT[
@@ -617,15 +617,22 @@ class TIPOScript(scripts.Script):
     ):
         prompt = prompt.strip() or tag_prompt
 
-        # Implement the tag ignoring logic
-        if ignore_first_n_tags > 0:
-            tags_list = [t.strip() for t in prompt.split(',') if t.strip()]
-            if ignore_first_n_tags < len(tags_list):
+        # Revised tag ignoring logic
+        if ignore_first_n_tags > 0 and prompt: # Only process if there's a prompt and need to ignore
+            # Replace newlines with commas, then split by comma
+            processed_prompt_for_splitting = prompt.replace('\\n', ',').replace('\n', ',')
+            tags_list = [t.strip() for t in processed_prompt_for_splitting.split(',') if t.strip()]
+
+            if not tags_list: # If prompt was just newlines/commas or empty
+                pass # Prompt remains as is (likely empty or original tag_prompt if prompt was empty)
+            elif ignore_first_n_tags < len(tags_list):
                 tags_list = tags_list[ignore_first_n_tags:]
                 prompt = ", ".join(tags_list)
-            elif ignore_first_n_tags >= len(tags_list) and len(tags_list) > 0 : # if try to ignore all or more than all, leave 1 tag to avoid empty prompt if possible
+            elif ignore_first_n_tags >= len(tags_list): # Ignore all or more than all
                 prompt = tags_list[-1] # Keep the last tag
-            # If tags_list is empty, prompt remains as is (empty or original tag_prompt)
+            # If after processing, tags_list became empty (e.g., ignore_first_n_tags was >= len and original list was 1),
+            # prompt will be the last tag. If original prompt was "a" and ignore=1, prompt becomes "a".
+            # If original prompt was "a,b" and ignore=2, prompt becomes "b".
 
         seed = int(seed) % SEED_MAX
         if model != self.current_model:

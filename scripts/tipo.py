@@ -242,6 +242,14 @@ class TIPOScript(scripts.Script):
                                 choices=list(TIPO_DEFAULT_FORMAT.keys()) + ["custom"],
                                 value="Both, tag first (recommend)",
                             )
+                            ignore_first_n_tags_slider = gr.Slider(
+                                label="Ignore First N Tags",
+                                minimum=0,
+                                maximum=90,
+                                step=1,
+                                value=0,
+                                info="Number of tags to ignore from the beginning of the prompt.",
+                            )
                             format_textarea = gr.TextArea(
                                 value=TIPO_DEFAULT_FORMAT[
                                     "Both, tag first (recommend)"
@@ -345,6 +353,7 @@ class TIPOScript(scripts.Script):
                 self.tag_prompt_area[is_img2img],
                 self.prompt_area[is_img2img * 2 + 1],
                 aspect_ratio_place_holder,
+                ignore_first_n_tags_slider,
                 seed_num_input,
                 tag_length_radio,
                 nl_length_radio,
@@ -380,6 +389,7 @@ class TIPOScript(scripts.Script):
             ),
             (orig_prompt_area, lambda d: d["Prompt"]),
             (enabled_check, lambda d: INFOTEXT_KEY in d),
+            (ignore_first_n_tags_slider, lambda d: self.get_infotext(d, "ignore_first_n_tags", 0)),
             (seed_num_input, lambda d: self.get_infotext(d, "seed", None)),
             (tag_length_radio, lambda d: self.get_infotext(d, "tag_length", None)),
             (nl_length_radio, lambda d: self.get_infotext(d, "nl_length", None)),
@@ -406,6 +416,7 @@ class TIPOScript(scripts.Script):
         return [
             enabled_check,
             process_timing_dropdown,
+            ignore_first_n_tags_slider,
             seed_num_input,
             tag_length_radio,
             nl_length_radio,
@@ -431,30 +442,32 @@ class TIPOScript(scripts.Script):
         prompt: str,
         process_timing: str,
         seed: int,
-        *args,
+        *args, # ignore_first_n_tags is now args[0]
     ):
         p.extra_generation_params[INFOTEXT_KEY] = json.dumps(
             {
                 "seed": seed,
                 "timing": process_timing,
-                "tag_length": args[0],
-                "nl_length": args[1],
-                "ban_tags": args[2],
-                "format_selected": args[3],
-                "format": args[4],
-                "temperature": args[5],
-                "top_p": args[6],
-                "top_k": args[7],
-                "model": args[8],
-                "gguf_cpu": args[9],
-                "no_formatting": args[10],
+                "ignore_first_n_tags": args[0],
+                "tag_length": args[1],
+                "nl_length": args[2],
+                "ban_tags": args[3],
+                "format_selected": args[4],
+                "format": args[5],
+                "temperature": args[6],
+                "top_p": args[7],
+                "top_k": args[8],
+                "model": args[9],
+                "gguf_cpu": args[10],
+                "no_formatting": args[11],
             },
             ensure_ascii=False,
         ).translate(QUOTESWAP)
-        p.extra_generation_params[INFOTEXT_KEY_PROMPT] = prompt.strip() or args[-1]
-        p.extra_generation_params[INFOTEXT_NL_PROMPT] = args[-2]
-        if args[3] != DEFAULT_FORMAT:
-            p.extra_generation_params[INFOTEXT_KEY_FORMAT] = args[3]
+        p.extra_generation_params[INFOTEXT_KEY_PROMPT] = prompt.strip() or args[-1] # tag_prompt is last
+        p.extra_generation_params[INFOTEXT_NL_PROMPT] = args[-2] # nl_prompt is second to last
+        # args[4] is format_selected
+        if args[4] != DEFAULT_FORMAT: # Check format_selected for default
+            p.extra_generation_params[INFOTEXT_KEY_FORMAT] = args[5] # format is args[5]
 
     def process(
         self,
@@ -483,14 +496,17 @@ class TIPOScript(scripts.Script):
         if args[3] != "custom":
             args[4] = TIPO_DEFAULT_FORMAT.get(args[3], args[4])
 
-        self.write_infotext(p, p.prompt, "AFTER", seed, *args)
+        self.write_infotext(p, p.prompt, "AFTER", seed, *args) # args here includes ignore_first_n_tags as args[0]
 
-        args = list(args)
-        nl_prompt = args.pop()
+        args_list = list(args)
+        ignore_first_n_tags_val = args_list.pop(0) # Extract ignore_first_n_tags
+        nl_prompt = args_list.pop() # nl_prompt is the last of the original *args from ui()
+        # Remaining args_list are: tag_length, nl_length, ..., no_formatting, tag_prompt_area
+
         new_all_prompts = []
         for prompt, sub_seed in zip(p.all_prompts, p.all_seeds):
             new_all_prompts.append(
-                self._process(prompt, nl_prompt, aspect_ratio, seed + sub_seed, *args)
+                self._process(prompt, nl_prompt, aspect_ratio, ignore_first_n_tags_val, seed + sub_seed, *args_list)
             )
 
         hr_fix_enabled = getattr(p, "enable_hr", False)
@@ -529,25 +545,62 @@ class TIPOScript(scripts.Script):
         aspect_ratio = p.width / p.height
         if seed == -1:
             seed = random.randrange(4294967294)
-        self.write_infotext(p, p.prompt, "BEFORE", seed, *args)
+        self.write_infotext(p, p.prompt, "BEFORE", seed, *args) # args here includes ignore_first_n_tags as args[0]
         seed = int(seed + p.seed)
 
-        args = list(args)
-        p.prompt = self._process(p.prompt, args.pop(), aspect_ratio, seed, *args)
+        args_list = list(args)
+        ignore_first_n_tags_val = args_list.pop(0) # Extract ignore_first_n_tags
+        nl_prompt = args_list.pop() # nl_prompt is the last of the original *args from ui()
+        # Remaining args_list are: tag_length, nl_length, ..., no_formatting, tag_prompt_area
 
-    def prompt_gen_only(self, *args):
-        args = list(args)
-        seed = args[3]
-        if seed == -1:
-            seed = random.randrange(2**31 - 1)
-            args[3] = seed
-        return self._process(*args)
+        p.prompt = self._process(p.prompt, nl_prompt, aspect_ratio, ignore_first_n_tags_val, seed, *args_list)
+
+    def prompt_gen_only(self, tag_prompt_area, prompt_area, aspect_ratio_place_holder, ignore_first_n_tags_slider_val, seed_num_input_val, *args):
+        # Construct the arguments list for _process carefully
+        # Original expected args for _process before ignore_first_n_tags:
+        # prompt (from tag_prompt_area or prompt_area), nl_prompt (from prompt_area), aspect_ratio, seed, ... other_args
+        # The *args at the end of prompt_gen_only's signature will capture the rest of the UI elements
+        # The prompt comes from self.prompt_area[is_img2img * 2] which is not directly passed here.
+        # It seems prompt_gen_only is used to populate self.prompt_area[is_img2img * 2]
+        # The actual prompt that _process uses is derived from its first argument `prompt` which is `tag_prompt_area` (or the main prompt if that's empty)
+
+        # The arguments for _process are:
+        # prompt, nl_prompt, aspect_ratio, ignore_first_n_tags, seed, tag_length, nl_length, ban_tags,
+        # format_select, format, temperature, top_p, top_k, model, gguf_use_cpu, no_formatting, tag_prompt
+
+        # Mapping inputs from prompt_gen.click to _process parameters:
+        # self.tag_prompt_area[is_img2img] -> prompt (becomes first arg to _process)
+        # self.prompt_area[is_img2img * 2 + 1] -> nl_prompt (becomes second arg to _process)
+        # aspect_ratio_place_holder -> aspect_ratio (becomes third arg to _process)
+        # ignore_first_n_tags_slider -> NEW ignore_first_n_tags (will be fourth)
+        # seed_num_input -> seed (will be fifth)
+        # *args from prompt_gen_only will then follow:
+        # tag_length_radio, nl_length_radio, ban_tags_textbox, format_dropdown, format_textarea,
+        # temperature_slider, top_p_slider, top_k_slider, model_dropdown, gguf_use_cpu, no_formatting,
+        # self.tag_prompt_area[is_img2img] (again, as tag_prompt for _process)
+
+        current_seed = seed_num_input_val
+        if current_seed == -1:
+            current_seed = random.randrange(2**31 - 1)
+
+        # Reconstruct args for _process in the correct order
+        process_args = [
+            tag_prompt_area,  # prompt
+            prompt_area,      # nl_prompt
+            aspect_ratio_place_holder, # aspect_ratio
+            ignore_first_n_tags_slider_val, # ignore_first_n_tags
+            current_seed,     # seed
+        ]
+        process_args.extend(args) # The rest of the arguments
+
+        return self._process(*process_args)
 
     def _process(
         self,
         prompt: str,
         nl_prompt: str,
         aspect_ratio: float,
+        ignore_first_n_tags: int,
         seed: int,
         tag_length: str,
         nl_length: str,
@@ -563,6 +616,17 @@ class TIPOScript(scripts.Script):
         tag_prompt: str,
     ):
         prompt = prompt.strip() or tag_prompt
+
+        # Implement the tag ignoring logic
+        if ignore_first_n_tags > 0:
+            tags_list = [t.strip() for t in prompt.split(',') if t.strip()]
+            if ignore_first_n_tags < len(tags_list):
+                tags_list = tags_list[ignore_first_n_tags:]
+                prompt = ", ".join(tags_list)
+            elif ignore_first_n_tags >= len(tags_list) and len(tags_list) > 0 : # if try to ignore all or more than all, leave 1 tag to avoid empty prompt if possible
+                prompt = tags_list[-1] # Keep the last tag
+            # If tags_list is empty, prompt remains as is (empty or original tag_prompt)
+
         seed = int(seed) % SEED_MAX
         if model != self.current_model:
             if " | " in model:
